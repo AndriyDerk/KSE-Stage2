@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+models/
+data/raw/official_data_en.csv
+data/raw/volunteer_data_en.csv
