@@ -9,8 +9,9 @@ from alertcast.telegram import scrape_channel  # noqa: E402
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--channel", default="kpszsu")
-    ap.add_argument("--since", default="2026-05-01")
+    ap.add_argument("--since", default="2025-12-01")
     ap.add_argument("--out", default="data/raw/telegram_kpszsu.csv")
+    ap.add_argument("--backfill", action="store_true", help="extend existing file further into the past")
     a = ap.parse_args()
-    df = scrape_channel(a.channel, a.since, Path(a.out))
+    df = scrape_channel(a.channel, a.since, Path(a.out), backfill=a.backfill)
     print(f"{len(df)} posts, {df['published_at'].min()} .. {df['published_at'].max()}")

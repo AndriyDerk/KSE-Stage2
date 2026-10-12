@@ -69,11 +69,36 @@ def predict_logreg(model, df: pd.DataFrame, cols: list[str]) -> np.ndarray:
     return model.predict_proba(X)[:, 1]
 
 
+PARAM_GRID = {
+    "default": {},
+    "small_leaves": dict(num_leaves=31, min_child_samples=500),
+    "large_leaves": dict(num_leaves=127, min_child_samples=100),
+    "strong_subsample": dict(feature_fraction=0.5, lambda_l2=10.0),
+}
+
+
+def block_bootstrap_auc_diff(y, p_a, p_b, day, n=1000, seed=0) -> tuple[float, float, float]:
+    """AUC(p_a) - AUC(p_b) with a 95% CI from resampling whole days
+    (hours within a day and regions within an hour are strongly correlated)."""
+    rng = np.random.default_rng(seed)
+    days = np.unique(day)
+    groups = [np.flatnonzero(day == d) for d in days]
+    diffs = []
+    for _ in range(n):
+        idx = np.concatenate([groups[i] for i in rng.integers(0, len(groups), len(groups))])
+        if len(np.unique(y[idx])) < 2:
+            continue
+        diffs.append(roc_auc_score(y[idx], p_a[idx]) - roc_auc_score(y[idx], p_b[idx]))
+    point = roc_auc_score(y, p_a) - roc_auc_score(y, p_b)
+    return point, float(np.percentile(diffs, 2.5)), float(np.percentile(diffs, 97.5))
+
+
 def fit_lgb(train: pd.DataFrame, y: str, cols: list[str], valid: pd.DataFrame | None = None,
-            num_boost_round: int = 3000) -> lgb.Booster:
+            num_boost_round: int = 3000, params: dict | None = None) -> lgb.Booster:
+    P = LGB_PARAMS | (params or {})
     dtr = lgb.Dataset(train[cols], train[y], categorical_feature=["region"], free_raw_data=False)
     if valid is None:
-        return lgb.train(LGB_PARAMS, dtr, num_boost_round=num_boost_round)
+        return lgb.train(P, dtr, num_boost_round=num_boost_round)
     dva = lgb.Dataset(valid[cols], valid[y], reference=dtr, categorical_feature=["region"])
-    return lgb.train(LGB_PARAMS, dtr, num_boost_round=num_boost_round, valid_sets=[dva],
+    return lgb.train(P, dtr, num_boost_round=num_boost_round, valid_sets=[dva],
                      callbacks=[lgb.early_stopping(100, verbose=False)])

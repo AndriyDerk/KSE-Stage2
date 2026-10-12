@@ -48,11 +48,13 @@ def parse_page(page: str) -> list[dict]:
     return rows
 
 
-def scrape_channel(channel: str, since: str, out: Path, pause: float = 0.4) -> pd.DataFrame:
+def scrape_channel(channel: str, since: str, out: Path, pause: float = 0.4, backfill: bool = False) -> pd.DataFrame:
     since_ts = pd.Timestamp(since, tz="UTC")
     existing = pd.read_csv(out) if out.exists() else pd.DataFrame()
     known = set(existing["post_id"]) if len(existing) else set()
     rows, before = [], None
+    if backfill and known:  # extend history backwards from the oldest known post
+        before = min(known)
     session = requests.Session()
     while True:
         url = f"https://t.me/s/{channel}" + (f"?before={before}" if before else "")
@@ -72,13 +74,13 @@ def scrape_channel(channel: str, since: str, out: Path, pause: float = 0.4) -> p
         oldest = min(page, key=lambda p: p["post_id"])
         if pd.Timestamp(oldest["published_at"]) < since_ts:
             break
-        if known and oldest["post_id"] <= max(known):
+        if known and not backfill and oldest["post_id"] <= max(known):
             break  # reached already-scraped history (incremental update)
         before = oldest["post_id"]
         time.sleep(pause)
     df = pd.concat([existing, pd.DataFrame(rows)], ignore_index=True)
     df = df.drop_duplicates("post_id").sort_values("post_id")
-    df = df[pd.to_datetime(df["published_at"], utc=True) >= since_ts]
+    # never drop already-stored history older than `since` (it only bounds new fetching)
     out.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(out, index=False)
     return df

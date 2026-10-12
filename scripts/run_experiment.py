@@ -64,13 +64,16 @@ def main(dl: bool):
     log(f"val  [{val_start} .. {test_start}),  test [{test_start} .. {end})")
     base_cols = feature_columns(df, telegram=False)
     tg_cols = feature_columns(df, telegram=True) if posts is not None else None
+    hourly_only = ("tg_mention_15m", "tg_mention_30m", "tg_mins_since_mention",
+                   "tg_drone_mention_1h", "tg_missile_mention_1h", "tg_kab_mention_1h")
+    tg_hourly_cols = [c for c in tg_cols if c not in hourly_only] if tg_cols else None
     if posts is not None:
         tg_start = df.loc[df["tg_covered"] > 0, "t"].min()
         log(f"telegram posts: {len(posts):,}, features available from {tg_start}")
 
     meta = {"known_until": str(known_until), "grid_end": str(end), "val_start": str(val_start),
             "test_start": str(test_start), "n_regions": len(grid.regions)}
-    sel_rows, test_rows, tg_rows, imp_rows = [], [], [], []
+    sel_rows, test_rows, tg_rows, imp_rows, hp_rows, boot_rows = [], [], [], [], [], []
     test_preds = []
 
     for h in HORIZONS:
@@ -93,40 +96,54 @@ def main(dl: bool):
                 best = (name, r)
         w_name, w_res = best
 
-        # 2) Telegram ablation on the period where posts exist (same rows for both arms)
-        use_tg = False
+        # 2) Telegram ablation on the period where posts exist (same rows for every arm)
+        arm_cols = {"alerts_only": base_cols}
+        if tg_cols is not None:
+            arm_cols["alerts+telegram_hourly"] = tg_hourly_cols
+            arm_cols["alerts+telegram"] = tg_cols
+        arm_val, arm_test = {}, {}
         if tg_cols is not None:
             tr = subset(df[df["tg_covered"] > 0], tg_start, val_start, h)
-            res = {}
-            for arm, cols in (("alerts_only", base_cols), ("alerts+telegram", tg_cols)):
+            trv = subset(df[df["tg_covered"] > 0], tg_start, test_start, h)
+            for arm, cols in arm_cols.items():
                 bst = M.fit_lgb(tr, y, cols, val)
                 pv = bst.predict(val[cols], num_iteration=bst.best_iteration)
-                trv = subset(df[df["tg_covered"] > 0], tg_start, test_start, h)
                 bst2 = M.fit_lgb(trv, y, cols, num_boost_round=max(50, int(bst.best_iteration * 1.1)))
-                pt = bst2.predict(test[cols])
-                clim = M.Climatology().fit(trv, y)
+                arm_test[arm] = pt = bst2.predict(test[cols])
                 for split, yy, pp, base in (("val", val[y], pv, M.Climatology().fit(tr, y).predict(val)),
-                                            ("test", test[y], pt, clim.predict(test))):
+                                            ("test", test[y], pt, M.Climatology().fit(trv, y).predict(test))):
                     r = M.metrics(yy.to_numpy(), pp, base)
                     r.update(horizon=h, arm=arm, split=split, n_train=len(tr))
                     tg_rows.append(r)
-                res[arm] = tg_rows[-2]["log_loss"]  # validation log-loss
-                log(f"h={h} tg-ablation {arm:16s} val LL={tg_rows[-2]['log_loss']:.4f} "
+                arm_val[arm] = tg_rows[-2]["log_loss"]
+                log(f"h={h} tg-ablation {arm:22s} val LL={tg_rows[-2]['log_loss']:.4f} "
                     f"AUC={tg_rows[-2]['roc_auc']:.4f} | test AUC={tg_rows[-1]['roc_auc']:.4f}")
-            use_tg = res["alerts+telegram"] < res["alerts_only"]
+        best_arm = min(arm_val, key=arm_val.get) if arm_val else "alerts_only"
+        use_tg = best_arm != "alerts_only"
 
-        # 3) final model chosen on validation, refit on train+val, evaluated ONCE on test
+        # 3) final model chosen on validation (features, window, hyper-parameters),
+        #    refit on train+val, evaluated ONCE on test
         if use_tg:
-            final_cols, w0, final_name = tg_cols, tg_start, "LightGBM (alerts+telegram)"
+            final_cols, w0 = arm_cols[best_arm], tg_start
+            final_name = "LightGBM (alerts+telegram)"
             tr_fit = subset(df[df["tg_covered"] > 0], w0, val_start, h)
-            n_iter = M.fit_lgb(tr_fit, y, final_cols, val).best_iteration
         else:
             final_cols, w0, final_name = base_cols, pd.Timestamp(WINDOWS[w_name], tz="UTC"), "LightGBM (alerts)"
-            n_iter = w_res["best_iter"]
+            tr_fit = subset(df, w0, val_start, h)
+        hp_best = None
+        for hp_name, hp in M.PARAM_GRID.items():
+            bst = M.fit_lgb(tr_fit, y, final_cols, val, params=hp)
+            ll = M.metrics(val[y].to_numpy(), bst.predict(val[final_cols], num_iteration=bst.best_iteration))["log_loss"]
+            hp_rows.append(dict(horizon=h, params=hp_name, val_log_loss=ll, best_iter=bst.best_iteration))
+            log(f"h={h} hp={hp_name:16s} val LL={ll:.4f} it={bst.best_iteration}")
+            if hp_best is None or ll < hp_best[1]:
+                hp_best = (hp_name, ll, bst.best_iteration)
+        hp_name, _, n_iter = hp_best
+        hp = M.PARAM_GRID[hp_name]
         trv = subset(df, w0, test_start, h)
         if use_tg:
             trv = trv[trv["tg_covered"] > 0]
-        final = M.fit_lgb(trv, y, final_cols, num_boost_round=max(50, int(n_iter * 1.1)))
+        final = M.fit_lgb(trv, y, final_cols, num_boost_round=max(50, int(n_iter * 1.1)), params=hp)
         final.save_model(str(MODELS / f"lgb_{h}h.txt"))
         clim = M.Climatology().fit(trv, y)
         logreg = M.fit_logreg(trv, y, base_cols)
@@ -146,7 +163,7 @@ def main(dl: bool):
             trw = subset(df, w0, ws, h)
             if use_tg:
                 trw = trw[trw["tg_covered"] > 0]
-            wf[m] = M.fit_lgb(trw, y, final_cols, num_boost_round=max(50, int(n_iter * 1.1))).predict(
+            wf[m] = M.fit_lgb(trw, y, final_cols, num_boost_round=max(50, int(n_iter * 1.1)), params=hp).predict(
                 test.loc[m, final_cols])
             wf_clim[m] = M.Climatology().fit(trw, y).predict(test[m])
         preds["Climatology (weekly refit)"] = wf_clim
@@ -157,16 +174,32 @@ def main(dl: bool):
             test_rows.append(r)
             log(f"h={h} TEST {name:40s} AUC={r['roc_auc']:.4f} PR={r['pr_auc']:.4f} "
                 f"Brier={r['brier']:.4f} BSS={r['brier_skill']:.3f}")
+        # 4) uncertainty: day-block bootstrap CIs of AUC differences on the test month
+        yy, day = test[y].to_numpy(), test["t"].dt.floor("D").to_numpy()
+        comps = {"vs climatology": base_p, "vs logistic regression": preds["Logistic regression"]}
+        if "alerts_only" in arm_test:
+            comps["vs same-window alerts-only LightGBM"] = arm_test["alerts_only"]
+        if "alerts+telegram_hourly" in arm_test:
+            comps["vs telegram-hourly ablation arm (default params)"] = arm_test["alerts+telegram_hourly"]
+        comps["weekly refit vs static"] = None
+        for cname, pb in comps.items():
+            pa = wf if pb is None else preds[final_name]
+            pb = preds[final_name] if pb is None else pb
+            d, lo, hi = M.block_bootstrap_auc_diff(yy, pa, pb, day)
+            boot_rows.append(dict(horizon=h, comparison=cname, auc_diff=d, ci_low=lo, ci_high=hi))
+            log(f"h={h} bootstrap {cname:38s} dAUC={d:+.4f} [{lo:+.4f}, {hi:+.4f}]")
         imp = pd.Series(final.feature_importance("gain"), index=final_cols)
         imp_rows.append((imp / imp.sum()).rename(f"{h}h"))
         tp = test[["t", "region", y]].rename(columns={y: "y"}).assign(
             horizon=h, p=preds[final_name], p_wf=wf, p_clim=base_p, p_clim_wf=wf_clim)
         test_preds.append(tp)
-        meta[f"final_{h}h"] = {"model": final_name, "train_from": str(w0), "n_iter": int(n_iter * 1.1),
+        meta[f"final_{h}h"] = {"model": final_name, "feature_set": best_arm, "params": hp_name, "train_from": str(w0), "n_iter": int(n_iter * 1.1),
                                "features": final_cols}
 
     pd.DataFrame(sel_rows).to_csv(REPORTS / "val_window_selection.csv", index=False)
     pd.DataFrame(test_rows).to_csv(REPORTS / "test_metrics.csv", index=False)
+    pd.DataFrame(hp_rows).to_csv(REPORTS / "hyperparameter_selection.csv", index=False)
+    pd.DataFrame(boot_rows).to_csv(REPORTS / "bootstrap_auc_diff.csv", index=False)
     if tg_rows:
         pd.DataFrame(tg_rows).to_csv(REPORTS / "telegram_ablation.csv", index=False)
     pd.concat(imp_rows, axis=1).sort_values("1h", ascending=False).to_csv(REPORTS / "feature_importance.csv")

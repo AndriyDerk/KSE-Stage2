@@ -7,6 +7,8 @@ verifies this by recomputing features on data truncated at t.
 """
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -120,6 +122,44 @@ def telegram_hourly(posts: pd.DataFrame, grid: Grid) -> tuple[np.ndarray, dict[s
     return mention, threat, total, covered
 
 
+def telegram_recent(posts: pd.DataFrame, grid: Grid) -> dict[str, np.ndarray]:
+    """Sub-hour Telegram features at each hour boundary (posts in [t-w, t)).
+
+    Air Force posts ("БпЛА курсом на ...") usually precede an alert, so unlike
+    the alert data itself, minute-level recency of posts carries signal."""
+    R, H = len(grid.regions), grid.n_hours
+    p = posts.copy()
+    p["ts"] = pd.to_datetime(p["published_at"], utc=True)
+    p = p[(p["ts"] >= grid.g0) & (p["ts"] < grid.end)]
+    minute = ((p["ts"] - grid.g0) // MIN).astype(int).to_numpy()
+    text = p["text"].fillna("").str.lower().to_numpy()
+    bounds = np.arange(H) * 60
+    kinds = {"drone": THREAT_RE["drone"], "missile": re.compile(r"ракет|балістик|балістичн|крилат"),
+             "kab": THREAT_RE["kab"]}
+    out = {f"tg_mention_{w}m": np.zeros((R, H)) for w in (15, 30)}
+    out["tg_mins_since_mention"] = np.full((R, H), 24 * 60.0)
+    out |= {f"tg_{k}_mention_1h": np.zeros((R, H)) for k in kinds}
+
+    def count(idx, w):
+        return np.searchsorted(idx, bounds, side="left") - np.searchsorted(idx, bounds - w, side="left")
+
+    for r, rx in REGION_RE.items():
+        if r not in grid.ridx:
+            continue
+        i = grid.ridx[r]
+        hit = np.array([bool(rx.search(t)) for t in text], dtype=bool)
+        idx = np.sort(minute[hit])
+        for w in (15, 30):
+            out[f"tg_mention_{w}m"][i] = count(idx, w)
+        pos = np.searchsorted(idx, bounds, side="left")
+        last = np.where(pos > 0, idx[np.maximum(pos - 1, 0)] if len(idx) else 0, -10**9)
+        out["tg_mins_since_mention"][i] = np.minimum(bounds - last, 24 * 60)
+        for k, krx in kinds.items():
+            kh = hit & np.array([bool(krx.search(t)) for t in text], dtype=bool)
+            out[f"tg_{k}_mention_1h"][i] = count(np.sort(minute[kh]), 60)
+    return out
+
+
 def build_frame(grid: Grid, posts: pd.DataFrame | None = None, min_history_h: int = 168) -> pd.DataFrame:
     """Long frame: one row per (origin hour, region) with features + targets."""
     R, H = len(grid.regions), grid.n_hours
@@ -175,6 +215,7 @@ def build_frame(grid: Grid, posts: pd.DataFrame | None = None, min_history_h: in
             cols[f"tg_posts_{w}h"] = np.broadcast_to(_rolling_past(total[None], w)[0], (R, H))
             for name, v in threat.items():
                 cols[f"tg_{name}_{w}h"] = np.broadcast_to(_rolling_past(v[None], w)[0], (R, H))
+        cols |= telegram_recent(posts, grid)
         cols["tg_covered"] = np.broadcast_to(covered, (R, H)).astype(float)
 
     df = pd.DataFrame({k: np.asarray(v, dtype=float).ravel() for k, v in cols.items()})

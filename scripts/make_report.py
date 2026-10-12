@@ -102,5 +102,15 @@ if ab.exists():
     for _, r in a.iterrows():
         lines.append(f"| {r['horizon']}h | {r['split']} | {r['arm']} | {r['roc_auc']:.3f} | {r['pr_auc']:.3f} | "
                      f"{r['log_loss']:.4f} |")
+b = pd.read_csv(R / "bootstrap_auc_diff.csv")
+lines.append("\n## Is the improvement real? Day-block bootstrap, 95% CI of the ROC-AUC difference (test)\n")
+lines.append("| horizon | comparison (final model ...) | ΔAUC | 95% CI |")
+lines.append("|---|---|---|---|")
+for _, r in b.iterrows():
+    lines.append(f"| {r['horizon']}h | {r['comparison']} | {r['auc_diff']:+.4f} | [{r['ci_low']:+.4f}, {r['ci_high']:+.4f}] |")
+hp = pd.read_csv(R / "hyperparameter_selection.csv")
+lines.append("\n## Hyper-parameter selection (validation log-loss)\n")
+lines.append(hp.pivot(index="params", columns="horizon", values="val_log_loss").round(4)
+             .rename(columns=lambda c: f"{c}h").to_markdown())
 (R / "RESULTS.md").write_text("\n".join(lines) + "\n")
 print((R / "RESULTS.md").read_text())

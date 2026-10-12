@@ -12,22 +12,24 @@ of data (14 Sep – 12 Oct 2026), which were never used for training or model se
 
 | onset within | climatology AUC | logistic regression AUC | **LightGBM (alerts + Telegram)** AUC | Brier: climatology → final | final, weekly refit AUC |
 |---|---|---|---|---|---|
-| 1 h (24% positive) | 0.733 | 0.767 | **0.786** | 0.160 → 0.147 | 0.790 |
-| 3 h (50% positive) | 0.775 | 0.805 | **0.820** | 0.207 → 0.172 | 0.823 |
-| 6 h (68% positive) | 0.834 | 0.859 | **0.866** | 0.173 → 0.130 | 0.867 |
+| 1 h (24% positive) | 0.725 | 0.767 | **0.788** | 0.164 → 0.146 | 0.791 |
+| 3 h (50% positive) | 0.766 | 0.805 | **0.823** | 0.217 → 0.171 | 0.825 |
+| 6 h (68% positive) | 0.827 | 0.859 | **0.870** | 0.184 → 0.128 | 0.869 |
 
-* **Telegram helps, measured fairly.** Same rows, same window (May–Sep 2026), only the feature set differs:
-  validation log-loss 0.427 → 0.415 (1 h), 0.495 → 0.477 (3 h), 0.412 → 0.393 (6 h); test ROC-AUC +0.005…+0.010
-  on every horizon. Selection of "Telegram on" was made on validation, before looking at the test.
+Every gain is checked with a **day-block bootstrap** (95% CI of the AUC difference, `reports/RESULTS.md`):
+
+* vs climatology: +0.04…+0.06; vs logistic regression: +0.011…+0.020 — all CIs well above 0.
+* **Telegram helps, measured fairly** (same rows, same window Dec 2025 – Sep 2026, only the feature set differs):
+  ΔAUC +0.008 [+0.003, +0.013] (1 h), +0.010 [+0.006, +0.014] (3 h), +0.006 [+0.003, +0.009] (6 h);
+  validation log-loss improves on every horizon. "Telegram on" was chosen on validation, before looking at the test.
 * **Well calibrated** on the test month (`reports/figures/calibration.png`) — the probabilities can be read literally.
-* **The model ages**: static-model AUC (1 h) falls from 0.803 in the first test week to 0.760 in the last;
-  refitting weekly (walk-forward, no leakage) recovers part of it (0.771). In deployment the model should be
-  refit at least weekly.
-* **Regime shift is real**: in Sep–Oct 2026 central/western oblasts were alerted far more often than the
-  history suggests (Kyivska: 85% of 3-hour windows had an onset vs 46% climatology). The model tracks this via
-  the 7-day activity features; climatology does not.
-* Negative results kept on record: sub-hour (15/30 min) wave features gave no gain (AUC 0.7797 → 0.7798);
-  training-window length barely matters (val log-loss 0.4241–0.4275 for windows from Jun 2024 to May 2026).
+* **The model ages**: static-model AUC (1 h) falls from ~0.80 in the first test week to ~0.76 in the last;
+  weekly walk-forward refits give a significant +0.003 at 1 h, nothing measurable at 6 h. Deploy with weekly refits.
+* **Regime shift is real**: in Sep–Oct 2026 central/western oblasts were alerted far more often than history
+  suggests (Kyivska: 85% of 3-hour windows had an onset vs 46% climatology). The 7-day activity features track it.
+* Negative / null results kept on record: sub-hour alert-wave features (ΔAUC +0.0001); sub-hour Telegram
+  features (CI includes 0 at 1 h); training-window length (val log-loss 0.424–0.428); hyper-parameter grid
+  (val log-loss differences ≤ 0.002). Extending Telegram history from May to Dec 2025 gave +0.002…+0.004 AUC.
 
 Full tables: [`reports/RESULTS.md`](reports/RESULTS.md). Figures: `reports/figures/`.
 
@@ -49,7 +51,7 @@ Full tables: [`reports/RESULTS.md`](reports/RESULTS.md). Figures: `reports/figur
 
 ```bash
 pip install -r requirements.txt
-python scripts/scrape_telegram.py --since 2026-05-01   # optional, ~20 min; a snapshot is committed
+python scripts/scrape_telegram.py --since 2025-12-01   # optional, ~30 min; a snapshot is committed
 python scripts/run_experiment.py --download            # features, selection, test evaluation (~5 min)
 python scripts/make_report.py                          # figures + reports/RESULTS.md
 python scripts/predict.py --download --scrape          # live forecast for all oblasts
@@ -61,7 +63,7 @@ python -m pytest tests                                 # leakage tests
 | source | what | period used |
 |---|---|---|
 | [Vadimkin/ukrainian-air-raid-sirens-dataset](https://github.com/Vadimkin/ukrainian-air-raid-sirens-dataset) `volunteer_data_en.csv` | oblast-level alert start/end, updated daily | Jun 2024 – 12 Oct 2026 |
-| `t.me/s/kpszsu` (public web preview, no login) | Air Force posts: threat type and direction ("БпЛА на Харківщину", "балістика") | May – Oct 2026 |
+| `t.me/s/kpszsu` (public web preview, no login) | 36.8k Air Force posts: threat type and direction ("БпЛА на Харківщину", "балістика") | Dec 2025 – Oct 2026 |
 
 Why the volunteer file and not the `official_data_en.csv` in the same repository: the official file
 stopped updating on **2026-09-07** (the task asks for the most recent data), and in 2026 it records alerts
@@ -102,8 +104,9 @@ retrospectively, so in real time an alert record may arrive with some delay.
   the last 15 min / 30 min / 1 / 3 / 6 / 24 / 168 h;
 * neighbours (hand-written oblast adjacency) and the whole country: same aggregates;
 * seasonality: local (Kyiv) hour, day of week, target in the same window yesterday / share of the last 7 days;
-* Telegram (optional): posts mentioning the oblast or its neighbours in the last 1/3 h, nationwide counts of
-  drone / ballistic / missile / KAB / strategic-aviation posts.
+* Telegram: posts mentioning the oblast or its neighbours in the last 15/30 min and 1/3 h, minutes since the last
+  mention, oblast-specific drone / missile / KAB mentions, nationwide counts of drone / ballistic / missile / KAB /
+  strategic-aviation / all-clear / nationwide-alarm posts.
 
 ## Repository layout
 
@@ -116,5 +119,6 @@ src/alertcast/model.py      LightGBM, logistic regression, climatology, seasonal
 scripts/                    run_experiment.py, make_report.py, predict.py, scrape_telegram.py
 tests/test_leakage.py       leakage tests
 reports/                    RESULTS.md, CSV metrics, figures/
+DESIGN.md                   architecture, decisions, weaknesses
 AI_LOG.md, REFLECTION.md    process documentation for the submission
 ```

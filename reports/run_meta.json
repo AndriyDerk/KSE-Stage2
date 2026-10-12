@@ -6,17 +6,23 @@
   "n_regions": 24,
   "final_1h": {
     "model": "LightGBM (alerts+telegram)",
-    "train_from": "2026-05-01 04:00:00+00:00",
-    "n_iter": 181
+    "feature_set": "alerts+telegram",
+    "params": "strong_subsample",
+    "train_from": "2025-12-01 04:00:00+00:00",
+    "n_iter": 255
   },
   "final_3h": {
     "model": "LightGBM (alerts+telegram)",
-    "train_from": "2026-05-01 04:00:00+00:00",
-    "n_iter": 152
+    "feature_set": "alerts+telegram_hourly",
+    "params": "small_leaves",
+    "train_from": "2025-12-01 04:00:00+00:00",
+    "n_iter": 333
   },
   "final_6h": {
     "model": "LightGBM (alerts+telegram)",
-    "train_from": "2026-05-01 04:00:00+00:00",
-    "n_iter": 132
+    "feature_set": "alerts+telegram_hourly",
+    "params": "small_leaves",
+    "train_from": "2025-12-01 04:00:00+00:00",
+    "n_iter": 215
   }
 }

@@ -19,3 +19,16 @@ is a condensed index of the decisions and course corrections that happened in it
 | 11 | Telegram ablation | A fair comparison must use the same rows and window for both arms. | Telegram improves validation log-loss on all horizons and test AUC by +0.005…+0.010 → chosen on validation. |
 | 12 | Model aging | Weekly breakdown of the test: AUC drops from 0.80 to 0.76 over 4 weeks. | Added walk-forward evaluation (refit every 7 days on data before that week) — recovers part of the drop; recommended deployment mode. |
 | 13 | A wrong impression (own error) | The Kyiv timeline plot looked over-confident. Checked numerically before "fixing" anything: mean predicted 0.527 vs observed 0.507 — calibrated. The real story was climatology: Kyivska oblast 85% observed vs 46% climatology (regime shift in Sep–Oct 2026). | No change to the model; the finding went into the README. |
+
+## Second iteration (improvement pass)
+
+| # | step | what was found / challenged | decision |
+|---|---|---|---|
+| 14 | Live data gap | Tried to close the gap between the daily dump and "now": `siren.pp.ua` gives only active alerts/aggregates; `air_alert_ua` channel stopped on 2026-09-07 and is raion-level. | Documented as the main product limitation instead of mixing inconsistent sources. |
+| 15 | More Telegram history | Telegram model trained only on May–Aug. Backfilled to Dec 2025 (36.8k posts). | +0.002…+0.004 test AUC. |
+| 16 | Sub-hour Telegram features | Posts precede alerts, so (unlike alert data) minute-level recency might help: 15/30 min mentions, minutes since mention, oblast-specific threat types. | Tested as a separate ablation arm: CI of the gain includes 0 at 1 h and 6 h → kept where validation chose it, reported as ~null. |
+| 17 | Hyper-parameters | Small grid on validation. | Differences ≤ 0.002 log-loss: GBM settings are not the bottleneck; information is. |
+| 18 | Statistical check | Point AUC differences of +0.01 could be noise (strong correlation within a day). | Day-block bootstrap CIs: Telegram, LightGBM-vs-logreg and weekly refit (1 h) gains are significant. |
+| 19 | Own reporting error | A bootstrap row labelled "vs hourly-only Telegram features" in fact compared hyper-parameters for 3 h / 6 h (validation had selected the hourly arm there). | Relabelled before publishing. |
+| 20 | Own bug | `predict.py --scrape` called the scraper with `since=2026-05-01`, which rewrote the post file and would have deleted the Dec–Apr backfill. | Scraper never drops stored history now; defaults aligned. |
+| 21 | Output consistency | Independent per-horizon models gave P(1h) > P(3h) in <1% of rows (gap up to 0.2). | Cumulative max in `predict.py`. |

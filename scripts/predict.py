@@ -27,7 +27,7 @@ if __name__ == "__main__":
         download(ROOT / "data/raw")
     if a.scrape:
         from alertcast.telegram import scrape_channel
-        scrape_channel("kpszsu", "2026-05-01", TG)
+        scrape_channel("kpszsu", "2025-12-01", TG)
     meta = json.loads((ROOT / "models/meta.json").read_text())
     alerts = load_alerts(ROOT / "data/raw/volunteer_data_en.csv")
     known = max(alerts["start"].max(), alerts["end"].max())
@@ -43,6 +43,10 @@ if __name__ == "__main__":
         if any(c.startswith("tg_") for c in m["features"]) and posts is None:
             sys.exit("model uses Telegram features: run with --scrape")
         now[f"P_{h}h"] = lgb.Booster(model_file=str(ROOT / f"models/lgb_{h}h.txt")).predict(now[m["features"]])
+    # an onset within 1h implies an onset within 3h and 6h: enforce P_1h <= P_3h <= P_6h
+    # (independently trained models violate it for <1% of rows, by up to 0.2)
+    for a, b in zip(HORIZONS, HORIZONS[1:]):
+        now[f"P_{b}h"] = now[[f"P_{a}h", f"P_{b}h"]].max(axis=1)
     out = now[["region", "active_now"] + [f"P_{h}h" for h in HORIZONS]].sort_values("P_3h", ascending=False)
     out["region"] = out["region"].astype(str)
     print(f"Forecast issued at {origin} UTC ({origin.tz_convert('Europe/Kyiv'):%Y-%m-%d %H:%M} Kyiv), "
